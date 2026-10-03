@@ -1,0 +1,62 @@
+# ActionPoints
+
+家庭行动积分 Web App。成员一键完成行动，获得积分并兑换奖励；管理员配置规则、查看结算和导出数据。界面支持电脑与手机，可添加到主屏幕。
+
+## 技术与数据原则
+
+Next.js 16、TypeScript、Prisma、PostgreSQL、Caddy、Docker Compose。积分余额始终由 `PointTransaction` 求和得出；领取、兑换、撤销、结算在数据库事务中执行。每个成员的写操作锁定 `User` 行，防止并发重复领取和双花。
+
+## 本地开发
+
+需要 Node.js 22+、PostgreSQL 17+。复制 `.env.example` 为 `.env`，设置 `DATABASE_URL` 为本地 PostgreSQL 地址，设置 `INITIAL_ADMIN_PASSWORD` 为至少 12 位的随机密码，并将 `APP_ORIGIN` 设为 `http://localhost:3000`。开发演示成员可选设置 `DEV_MEMBER_PASSWORD`（至少 12 位）。
+
+```bash
+npm install
+npx prisma migrate deploy
+npm run db:seed
+npm run dev
+```
+
+访问 `http://localhost:3000`。首次初始化只创建一个管理员；管理员随后在「管理 → 成员」添加家庭成员，并在「行动」中分配行动。开发环境设置 `DEV_MEMBER_PASSWORD` 时会创建示例 `member` 账号；生产环境不会创建默认成员或公开密码。
+
+## 测试
+
+测试使用独立的、名称包含 `actionpoints_test` 的 PostgreSQL 数据库，切勿指向生产库：
+
+```bash
+DATABASE_URL='postgresql://.../actionpoints_test?schema=public' npx prisma migrate deploy
+DATABASE_URL='postgresql://.../actionpoints_test?schema=public' npm test
+```
+
+无需数据库可先运行 `npm run test:unit` 验证日期逻辑。要运行 HTTP 权限测试，先在测试库上启动应用，再设置 `TEST_BASE_URL`、`TEST_MEMBER_USERNAME` 和 `TEST_MEMBER_PASSWORD`；未设置时该测试会跳过。
+
+## 阿里云 ECS 部署
+
+准备 Ubuntu LTS 云服务器，安装 Docker Engine 与 Docker Compose 插件。为域名设置指向服务器公网 IP 的 A 记录，安全组仅开放 80、443 和用于管理的 SSH；数据库端口不映射到公网。把仓库复制到服务器，复制 `.env.example` 为 `.env` 并修改所有密码、密钥、域名和 `APP_ORIGIN`。`APP_ORIGIN` 必须与浏览器访问的 HTTPS 地址完全一致，例如 `https://points.example.com`。数据库密码中若含 `@`、`:`、`/` 等字符，需在 `DATABASE_URL` 中 URL 编码；Compose 配置当前会把该密码直接插入 URL，建议生成只含字母数字的长密码。
+
+```bash
+docker compose up -d --build
+docker compose ps
+docker compose logs -f web
+```
+
+Caddy 会自动申请 HTTPS 证书，前提是域名解析生效且 80/443 可访问。数据库与 Web 只在 Compose 内网；每日结算进程每分钟检查一次默认 22:30 的结算时间。用户次日访问时也会补做遗漏结算。生产必须通过 HTTPS 访问。
+
+## 备份、恢复、升级
+
+每天通过宿主机 cron 执行 `scripts/backup.sh`，生成 `backups/` 下的 PostgreSQL 自定义格式备份并保留最近约 14 天。建议把备份目录同步到服务器之外。恢复前先停止应用写入并额外做一次备份，然后执行 `scripts/restore.sh backups/文件.dump`。恢复会覆盖现有数据库内容。
+
+升级时先备份，拉取新代码，再运行 `docker compose up -d --build`。容器启动时自动应用 Prisma migration，随后执行幂等 seed。
+
+## 功能与边界
+
+- 成员只能读取和操作自己的数据；管理员可以管理成员、行动及分配、加分规则、奖励、积分、结算与 CSV 导出。
+- 当日同一行动只能有效领取一次。管理员撤销后保留原记录，并追加反向流水。
+- 奖励以服务端当前价格兑换；兑换后在「我的奖励」中单独点击使用。
+- 每日奖励默认关闭。结算后当天积分操作关闭，以保证结算快照稳定。
+- 提醒与过渡字段已保留，浏览器推送尚未实现。
+- PWA 包含 manifest 与图标；离线操作不支持。
+
+## 环境变量
+
+见 `.env.example`。`CRON_SECRET` 用于内部结算接口；`INITIAL_ADMIN_PASSWORD` 只在首次创建管理员时使用；`APP_TIMEZONE` 决定行动日期与结算日期，默认 `Asia/Shanghai`。不要提交 `.env`。
