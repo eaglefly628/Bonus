@@ -1,0 +1,177 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MEMBER
+}
+enum TxType {
+  ACTION
+  BONUS
+  REWARD_PURCHASE
+  MANUAL_ADJUSTMENT
+  REVERSAL
+  DAILY_BONUS
+}
+enum RedemptionStatus {
+  AVAILABLE
+  USED
+  CANCELLED
+}
+enum SettlementType {
+  MANUAL
+  AUTO
+}
+
+model User {
+  id String @id @default(cuid())
+  username String @unique
+  passwordHash String
+  role Role @default(MEMBER)
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  sessions Session[]
+  assignments ActionAssignment[]
+  completions ActionCompletion[]
+  transactions PointTransaction[] @relation("owner")
+  redemptions RewardRedemption[]
+  settlements DailySettlement[]
+}
+model Session {
+  id String @id @default(cuid())
+  userId String
+  tokenHash String @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+model LoginAttempt {
+  id String @id @default(cuid())
+  key String
+  createdAt DateTime @default(now())
+  @@index([key, createdAt])
+}
+model Action {
+  id String @id @default(cuid())
+  name String
+  icon String @default("✨")
+  description String @default("")
+  firstStep String @default("")
+  points Int
+  scheduledTime String?
+  repeatRule String @default("0,1,2,3,4,5,6")
+  reminderEnabled Boolean @default(false)
+  reminderBeforeMinutes Int @default(10)
+  transitionEnabled Boolean @default(false)
+  transitionDurationMinutes Int @default(5)
+  transitionInstruction String @default("")
+  enabled Boolean @default(true)
+  sortOrder Int @default(0)
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  assignments ActionAssignment[]
+  completions ActionCompletion[]
+}
+model ActionAssignment {
+  id String @id @default(cuid())
+  actionId String
+  userId String
+  enabled Boolean @default(true)
+  action Action @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([actionId, userId])
+}
+model ActionCompletion {
+  id String @id @default(cuid())
+  userId String
+  actionId String
+  localDate String
+  scheduledAt DateTime?
+  completedAt DateTime @default(now())
+  startupLatencySeconds Int?
+  pointsAwarded Int
+  actionNameSnapshot String
+  reversedAt DateTime?
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id])
+  action Action @relation(fields: [actionId], references: [id])
+  @@index([userId, localDate])
+}
+model BonusRule {
+  id String @id @default(cuid())
+  name String
+  icon String @default("✨")
+  points Int
+  enabled Boolean @default(true)
+  sortOrder Int @default(0)
+}
+model PointTransaction {
+  id String @id @default(cuid())
+  userId String
+  amount Int
+  type TxType
+  sourceId String?
+  sourceName String
+  note String @default("")
+  createdByUserId String?
+  localDate String
+  createdAt DateTime @default(now())
+  user User @relation("owner", fields: [userId], references: [id])
+  @@index([userId, createdAt])
+  @@index([userId, localDate])
+}
+model Reward {
+  id String @id @default(cuid())
+  name String
+  icon String @default("🎁")
+  description String @default("")
+  cost Int
+  enabled Boolean @default(true)
+  repeatable Boolean @default(true)
+  stock Int?
+  sortOrder Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  redemptions RewardRedemption[]
+}
+model RewardRedemption {
+  id String @id @default(cuid())
+  userId String
+  rewardId String
+  rewardNameSnapshot String
+  costSnapshot Int
+  status RedemptionStatus @default(AVAILABLE)
+  redeemedAt DateTime @default(now())
+  usedAt DateTime?
+  cancelledAt DateTime?
+  user User @relation(fields: [userId], references: [id])
+  reward Reward @relation(fields: [rewardId], references: [id])
+}
+model DailySettlement {
+  id String @id @default(cuid())
+  userId String
+  localDate String
+  completedActionCount Int
+  actionPoints Int
+  bonusPoints Int
+  dailyBonusPoints Int
+  earnedPoints Int
+  spentPoints Int
+  netPoints Int
+  openingBalance Int
+  closingBalance Int
+  settledAt DateTime @default(now())
+  settlementType SettlementType
+  user User @relation(fields: [userId], references: [id])
+  @@unique([userId, localDate])
+}
+model Setting {
+  key String @id
+  value String
+}

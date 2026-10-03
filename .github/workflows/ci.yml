@@ -1,0 +1,40 @@
+name: Check ActionPoints
+on:
+  push:
+  pull_request:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: actionpoints
+          POSTGRES_PASSWORD: test-password
+          POSTGRES_DB: actionpoints_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U actionpoints -d actionpoints_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://actionpoints:test-password@localhost:5432/actionpoints_test?schema=public
+      APP_ORIGIN: http://127.0.0.1:3000
+      APP_TIMEZONE: Asia/Shanghai
+      DEV_MEMBER_PASSWORD: test-member-password-123
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx prisma migrate deploy
+      - run: npm run test:unit
+      - run: node --import tsx --test tests/core.test.ts
+      - run: npm run db:seed
+      - name: Test member permissions over HTTP
+        run: |
+          npm run start > /tmp/actionpoints-server.log 2>&1 &
+          for i in 1 2 3 4 5 6 7 8 9 10; do curl -fsS http://127.0.0.1:3000/login >/dev/null && break || sleep 2; done
+          TEST_BASE_URL=http://127.0.0.1:3000 TEST_MEMBER_USERNAME=member TEST_MEMBER_PASSWORD="$DEV_MEMBER_PASSWORD" node --import tsx --test tests/api.test.ts

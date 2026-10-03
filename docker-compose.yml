@@ -1,0 +1,56 @@
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: actionpoints
+      POSTGRES_USER: actionpoints
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U actionpoints -d actionpoints"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [private]
+  web:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db: {condition: service_healthy}
+    environment:
+      DATABASE_URL: postgresql://actionpoints:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/actionpoints?schema=public
+      APP_ORIGIN: ${APP_ORIGIN:?Set APP_ORIGIN}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Shanghai}
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?Set INITIAL_ADMIN_PASSWORD}
+      CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET}
+    networks: [private]
+  cron:
+    image: curlimages/curl:8.16.0
+    restart: unless-stopped
+    depends_on: [web]
+    environment:
+      CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET}
+    entrypoint: ["/bin/sh","-c"]
+    command: ['while true; do curl -fsS -X POST -H "Authorization: Bearer $${CRON_SECRET}" http://web:3000/api/cron || true; sleep 60; done']
+    networks: [private]
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80","443:443"]
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [web]
+    networks: [private]
+networks:
+  private:
+volumes:
+  db_data:
+  caddy_data:
+  caddy_config:
