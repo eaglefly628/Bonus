@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
 import { currentUser, login, logout } from '@/lib/auth';
-import { adjustPoints, awardBonus, cancelRedemption, completeAction, getBalance, lazySettle, redeem, reverseCompletion, settle, todayData, useReward } from '@/lib/core';
+import { adjustPoints, awardBonus, cancelRedemption, completeAction, completeActionStep, getBalance, lazySettle, redeem, reverseActionProgress, reverseCompletion, settle, todayData, useReward } from '@/lib/core';
 import { localDate } from '@/lib/time';
 
 export const dynamic = 'force-dynamic';
@@ -34,6 +34,7 @@ async function handler(req: NextRequest, ctx: Context) {
     if (key === 'auth/me' && method === 'GET') return NextResponse.json(user);
     if (key === 'today' && method === 'GET') { await lazySettle(user.id); return NextResponse.json(await todayData(user.id)); }
     if (key === 'actions/complete' && method === 'POST') return NextResponse.json(await completeAction(user.id, str((await body(req)).actionId)));
+    if (key === 'actions/step' && method === 'POST') { const b=await body(req); return NextResponse.json(await completeActionStep(user.id,str(b.actionId),str(b.stepId))); }
     if (key === 'points' && method === 'GET') {
       await lazySettle(user.id);
       const transactions = await db.pointTransaction.findMany({ where: { userId: user.id }, orderBy: { createdAt:'desc' } });
@@ -76,19 +77,51 @@ async function handler(req: NextRequest, ctx: Context) {
       }
     }
     if (key === 'admin/actions') {
-      if (method==='GET') return NextResponse.json(await db.action.findMany({ include:{assignments:true}, orderBy:{sortOrder:'asc'} }));
+      if (method==='GET') return NextResponse.json(await db.action.findMany({ include:{assignments:true,steps:{where:{enabled:true},orderBy:{sortOrder:'asc'}}}, orderBy:{sortOrder:'asc'} }));
       const b=await body(req), points=int(b.points);
       if (!str(b.name) || !Number.isInteger(points) || points<0 || points>10000) throw new Error('行动名称或积分无效');
       const data={ name:str(b.name), icon:str(b.icon,10)||'✨', description:str(b.description,500), firstStep:str(b.firstStep,300), points, scheduledTime:str(b.scheduledTime,5)||null, repeatRule:str(b.repeatRule,30)||'0,1,2,3,4,5,6', reminderEnabled:bool(b.reminderEnabled), reminderBeforeMinutes:int(b.reminderBeforeMinutes)||10, transitionEnabled:bool(b.transitionEnabled), transitionDurationMinutes:int(b.transitionDurationMinutes)||5, transitionInstruction:str(b.transitionInstruction,300), enabled:b.enabled!==false, sortOrder:int(b.sortOrder)||0 };
       if (data.scheduledTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(data.scheduledTime)) throw new Error('计划时间格式须为 HH:mm');
       if (method==='POST') return NextResponse.json(await db.action.create({ data:{...data,createdBy:user.id} }));
-      if (method==='PATCH') return NextResponse.json(await db.action.update({ where:{id:str(b.id)},data }));
+      if (method==='PATCH') { const existing=await db.action.findUnique({where:{id:str(b.id)},include:{steps:{where:{enabled:true}}}});if(!existing)throw new Error('行动不存在');if(existing.steps.length)throw new Error('请在 Pattern 引导中编辑分步行动');return NextResponse.json(await db.action.update({ where:{id:str(b.id)},data })); }
+    }
+    if (key === 'admin/patterns' && (method === 'POST' || method === 'PATCH')) {
+      const b=await body(req), name=str(b.name,100), description=str(b.description,500), scheduledTime=str(b.scheduledTime,5)||null;
+      const rawSteps=Array.isArray(b.steps)?b.steps:[];
+      if (!name || rawSteps.length<2 || rawSteps.length>20) throw new Error('请填写行动名称和 2–20 个步骤');
+      const steps=rawSteps.map((s:unknown)=>{const row=(s && typeof s==='object'?s:{}) as Record<string,unknown>;return {id:str(row.id),text:str(row.text,200),points:int(row.points)};});
+      if (steps.some(s=>!s.text || !Number.isInteger(s.points) || s.points<0 || s.points>1000)) throw new Error('每一步都需要内容；积分须为 0–1000 的整数');
+      const userIds=Array.isArray(b.userIds)?[...new Set(b.userIds.map(v=>str(v)).filter(Boolean))]:[];
+      if (!userIds.length) throw new Error('请至少选择一位适用成员');
+      if (scheduledTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(scheduledTime)) throw new Error('计划时间格式须为 HH:mm');
+      const repeatRule=str(b.repeatRule,30)||'0,1,2,3,4,5,6';
+      if (!/^[0-6](,[0-6])*$/.test(repeatRule)) throw new Error('重复日期无效');
+      const actionId=str(b.id);
+      return NextResponse.json(await db.$transaction(async tx=>{
+        const members=await tx.user.findMany({where:{id:{in:userIds},role:'MEMBER',active:true},select:{id:true}});
+        if(members.length!==userIds.length)throw new Error('适用成员无效');
+        const base={name,description,icon:str(b.icon,10)||'✨',firstStep:steps[0].text,points:steps.reduce((n,s)=>n+s.points,0),scheduledTime,repeatRule,enabled:b.enabled!==false};
+        if(method==='POST')return tx.action.create({data:{...base,createdBy:user.id,sortOrder:await tx.action.count(),steps:{create:steps.map((s,i)=>({text:s.text,points:s.points,sortOrder:i}))},assignments:{create:userIds.map(userId=>({userId}))}},include:{steps:true,assignments:true}});
+        const existing=await tx.action.findUnique({where:{id:actionId},include:{steps:true}});
+        if(!existing)throw new Error('Pattern 不存在');
+        const today=localDate();
+        if(await tx.actionStepCompletion.count({where:{actionId,localDate:today,reversedAt:null}}))throw new Error('今天已有成员开始这个 Pattern；请明天再修改步骤');
+        const ids=new Set(existing.steps.map(s=>s.id));
+        if(steps.some(s=>s.id && !ids.has(s.id)))throw new Error('步骤不属于此 Pattern');
+        const saved=await tx.action.update({where:{id:actionId},data:base});
+        await tx.actionStep.updateMany({where:{actionId},data:{enabled:false}});
+        for(let i=0;i<steps.length;i++){const s=steps[i];if(s.id)await tx.actionStep.update({where:{id:s.id},data:{text:s.text,points:s.points,sortOrder:i,enabled:true}});else await tx.actionStep.create({data:{actionId,text:s.text,points:s.points,sortOrder:i}});}
+        await tx.actionAssignment.updateMany({where:{actionId},data:{enabled:false}});
+        for(const userId of userIds)await tx.actionAssignment.upsert({where:{actionId_userId:{actionId,userId}},create:{actionId,userId},update:{enabled:true}});
+        return saved;
+      }));
     }
     if (key === 'admin/assign' && method==='POST') {
       const b=await body(req), actionId=str(b.actionId), userId=str(b.userId);
       return NextResponse.json(await db.actionAssignment.upsert({ where:{actionId_userId:{actionId,userId}},create:{actionId,userId,enabled:b.enabled!==false},update:{enabled:b.enabled!==false} }));
     }
     if (key === 'admin/reverse' && method==='POST') return NextResponse.json(await reverseCompletion(user.id,str((await body(req)).completionId)));
+    if (key === 'admin/progress/reverse' && method==='POST') { const b=await body(req);return NextResponse.json(await reverseActionProgress(user.id,str(b.userId),str(b.actionId),str(b.localDate,10))); }
     if (key === 'admin/bonus') {
       if (method==='GET') return NextResponse.json(await db.bonusRule.findMany({orderBy:{sortOrder:'asc'}}));
       const b=await body(req), points=int(b.points);
@@ -125,6 +158,7 @@ async function handler(req: NextRequest, ctx: Context) {
       }
     }
     if (key === 'admin/completions' && method==='GET') return NextResponse.json(await db.actionCompletion.findMany({include:{user:{select:{username:true}}},orderBy:{completedAt:'desc'},take:200}));
+    if (key === 'admin/step-completions' && method==='GET') return NextResponse.json(await db.actionStepCompletion.findMany({where:{reversedAt:null},include:{user:{select:{username:true}},action:{select:{name:true}}},orderBy:{completedAt:'desc'},take:200}));
     if (key === 'admin/redemptions' && method==='GET') return NextResponse.json(await db.rewardRedemption.findMany({include:{user:{select:{username:true}}},orderBy:{redeemedAt:'desc'},take:200}));
     if (key === 'admin/export' && method==='GET') {
       const kind=req.nextUrl.searchParams.get('kind');

@@ -19,8 +19,9 @@ export async function completeAction(userId: string, actionId: string) {
     await lockUser(tx, userId);
     const now = new Date(), day = localDate(now);
     await ensureOpen(tx, userId, day);
-    const action = await tx.action.findUnique({ where: { id: actionId }, include: { assignments: { where: { userId, enabled: true } } } });
+    const action = await tx.action.findUnique({ where: { id: actionId }, include: { assignments: { where: { userId, enabled: true } }, steps: { where: { enabled: true } } } });
     if (!action?.enabled || !action.assignments.length || !action.repeatRule.split(',').includes(String(localWeekday(now)))) throw new Error('今天不能领取此行动');
+    if (action.steps.length) throw new Error('请按顺序完成每一步');
     if (await tx.actionCompletion.findFirst({ where: { userId, actionId, localDate: day, reversedAt: null } })) throw new Error('今天已领取');
     const scheduledAt = action.scheduledTime ? scheduledInstant(day, action.scheduledTime) : null;
     const completion = await tx.actionCompletion.create({ data: { userId, actionId, localDate: day, scheduledAt, completedAt: now, startupLatencySeconds: scheduledAt ? Math.round((now.getTime() - scheduledAt.getTime()) / 1000) : null, pointsAwarded: action.points, actionNameSnapshot: action.name } });
@@ -28,16 +29,52 @@ export async function completeAction(userId: string, actionId: string) {
     return { completion, balance: await balance(tx, userId) };
   });
 }
-export async function reverseCompletion(adminId: string, completionId: string) {
+export async function completeActionStep(userId: string, actionId: string, stepId: string) {
   return db.$transaction(async tx => {
-    const found = await tx.actionCompletion.findUnique({ where: { id: completionId } });
-    if (!found) throw new Error('记录不存在');
-    await lockUser(tx, found.userId);
-    const day = localDate(); await ensureOpen(tx, found.userId, day);
-    const result = await tx.actionCompletion.updateMany({ where: { id: completionId, reversedAt: null }, data: { reversedAt: new Date() } });
-    if (result.count !== 1) throw new Error('已经撤销');
-    if (found.pointsAwarded > 0) await tx.pointTransaction.create({ data: { userId: found.userId, amount: -found.pointsAwarded, type: 'REVERSAL', sourceId: completionId, sourceName: found.actionNameSnapshot, note: '撤销行动完成', createdByUserId: adminId, localDate: day } });
-    return { balance: await balance(tx, found.userId) };
+    await lockUser(tx, userId);
+    const now = new Date(), day = localDate(now);
+    await ensureOpen(tx, userId, day);
+    const action = await tx.action.findUnique({ where: { id: actionId }, include: { assignments: { where: { userId, enabled: true } }, steps: { where: { enabled: true }, orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }] } } });
+    if (!action?.enabled || !action.assignments.length || !action.repeatRule.split(',').includes(String(localWeekday(now)))) throw new Error('今天不能完成此行动');
+    if (!action.steps.length) throw new Error('此行动没有步骤');
+    if (await tx.actionCompletion.findFirst({ where: { userId, actionId, localDate: day, reversedAt: null } })) throw new Error('今天已完成整项行动');
+    const previous = await tx.actionStepCompletion.findMany({ where: { userId, actionId, localDate: day, reversedAt: null }, orderBy: { completedAt: 'asc' } });
+    const completedIds = new Set(previous.map(s => s.stepId));
+    const next = action.steps.find(s => !completedIds.has(s.id));
+    if (!next || next.id !== stepId) throw new Error('请从当前步骤继续，不能重复或跳步');
+    const step = await tx.actionStepCompletion.create({ data: { userId, actionId, stepId, localDate: day, stepNameSnapshot: next.text, pointsAwarded: next.points, completedAt: now } });
+    if (next.points > 0) await tx.pointTransaction.create({ data: { userId, amount: next.points, type: 'ACTION', sourceId: step.id, sourceName: `${action.name} · ${next.text}`, localDate: day } });
+    const remaining = action.steps.find(s => s.id !== next.id && !completedIds.has(s.id));
+    let completion = null;
+    if (!remaining) {
+      const scheduledAt = action.scheduledTime ? scheduledInstant(day, action.scheduledTime) : null;
+      const startedAt = previous[0]?.completedAt || now;
+      completion = await tx.actionCompletion.create({ data: { userId, actionId, localDate: day, scheduledAt, completedAt: now, startupLatencySeconds: scheduledAt ? Math.round((startedAt.getTime() - scheduledAt.getTime()) / 1000) : null, pointsAwarded: previous.reduce((n,s) => n+s.pointsAwarded, next.points), actionNameSnapshot: action.name } });
+    }
+    return { step, completion, nextStep: remaining ? { id: remaining.id, text: remaining.text } : null, balance: await balance(tx, userId) };
+  });
+}
+export async function reverseCompletion(adminId: string, completionId: string) {
+  const found = await db.actionCompletion.findUnique({ where: { id: completionId } });
+  if (!found) throw new Error('记录不存在');
+  return reverseActionProgress(adminId, found.userId, found.actionId, found.localDate);
+}
+export async function reverseActionProgress(adminId: string, userId: string, actionId: string, localDateOfProgress: string) {
+  return db.$transaction(async tx => {
+    await lockUser(tx, userId);
+    const day = localDate(); await ensureOpen(tx, userId, day);
+    const [completion, steps, action] = await Promise.all([
+      tx.actionCompletion.findFirst({ where: { userId, actionId, localDate: localDateOfProgress, reversedAt: null } }),
+      tx.actionStepCompletion.findMany({ where: { userId, actionId, localDate: localDateOfProgress, reversedAt: null } }),
+      tx.action.findUnique({ where: { id: actionId } })
+    ]);
+    if (!completion && !steps.length) throw new Error('进度已经撤销或不存在');
+    const at = new Date();
+    if (completion) await tx.actionCompletion.update({ where: { id: completion.id }, data: { reversedAt: at } });
+    if (steps.length) await tx.actionStepCompletion.updateMany({ where: { userId, actionId, localDate: localDateOfProgress, reversedAt: null }, data: { reversedAt: at } });
+    const amount = steps.length ? steps.reduce((n,s) => n+s.pointsAwarded,0) : completion?.pointsAwarded || 0;
+    if (amount > 0) await tx.pointTransaction.create({ data: { userId, amount: -amount, type: 'REVERSAL', sourceId: completion?.id || steps[0].id, sourceName: completion?.actionNameSnapshot || action?.name || '行动', note: '撤销行动进度', createdByUserId: adminId, localDate: day } });
+    return { balance: await balance(tx, userId) };
   });
 }
 export async function awardBonus(adminId: string, userId: string, bonusId: string, note = '') {
@@ -127,10 +164,12 @@ export async function lazySettle(userId: string) {
 function nextLocalDate(day: string) { return new Date(Date.parse(`${day}T12:00:00Z`) + 86400_000).toISOString().slice(0,10); }
 export async function todayData(userId: string) {
   const day = localDate(); const weekday = String(localWeekday());
-  const [actions, completions, points, total] = await Promise.all([
-    db.action.findMany({ where: { enabled: true, assignments: { some: { userId, enabled: true } } }, orderBy: { sortOrder: 'asc' } }),
+  const [actions, completions, stepCompletions, points, total] = await Promise.all([
+    db.action.findMany({ where: { enabled: true, assignments: { some: { userId, enabled: true } } }, include: { steps: { where: { enabled: true }, orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }] } }, orderBy: { sortOrder: 'asc' } }),
     db.actionCompletion.findMany({ where: { userId, localDate: day, reversedAt: null } }),
+    db.actionStepCompletion.findMany({ where: { userId, localDate: day, reversedAt: null } }),
     db.pointTransaction.findMany({ where: { userId, localDate: day } }), getBalance(userId)
   ]);
-  return { date: day, balance: total, earned: points.filter(t=>t.amount>0).reduce((n,t)=>n+t.amount,0), completed: completions.length, actions: actions.filter(a=>a.repeatRule.split(',').includes(weekday)).map(a=>({ ...a, done: completions.some(c=>c.actionId===a.id) })), settled: !!await db.dailySettlement.findUnique({ where: { userId_localDate: { userId, localDate: day } } }) };
+  const visible=actions.filter(a=>a.repeatRule.split(',').includes(weekday));
+  return { date: day, balance: total, earned: points.filter(t=>t.amount>0).reduce((n,t)=>n+t.amount,0), completed: completions.filter(c=>visible.some(a=>a.id===c.actionId)).length, actions: visible.map(a=>{const done=completions.some(c=>c.actionId===a.id);const completedSteps=stepCompletions.filter(s=>s.actionId===a.id&&a.steps.some(step=>step.id===s.stepId));const completedIds=new Set(completedSteps.map(s=>s.stepId));return { ...a, done, progressCount:completedSteps.length, stepCount:a.steps.length, currentStep:done?null:a.steps.find(s=>!completedIds.has(s.id))||null };}), settled: !!await db.dailySettlement.findUnique({ where: { userId_localDate: { userId, localDate: day } } }) };
 }

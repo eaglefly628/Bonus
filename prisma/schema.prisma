@@ -38,6 +38,7 @@ model User {
   sessions Session[]
   assignments ActionAssignment[]
   completions ActionCompletion[]
+  stepCompletions ActionStepCompletion[]
   transactions PointTransaction[] @relation("owner")
   redemptions RewardRedemption[]
   settlements DailySettlement[]
@@ -77,6 +78,34 @@ model Action {
   updatedAt DateTime @updatedAt
   assignments ActionAssignment[]
   completions ActionCompletion[]
+  steps ActionStep[]
+  stepCompletions ActionStepCompletion[]
+}
+model ActionStep {
+  id String @id @default(cuid())
+  actionId String
+  text String
+  points Int @default(0)
+  enabled Boolean @default(true)
+  sortOrder Int @default(0)
+  action Action @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  completions ActionStepCompletion[]
+  @@index([actionId, sortOrder])
+}
+model ActionStepCompletion {
+  id String @id @default(cuid())
+  userId String
+  actionId String
+  stepId String
+  localDate String
+  stepNameSnapshot String
+  pointsAwarded Int
+  completedAt DateTime @default(now())
+  reversedAt DateTime?
+  user User @relation(fields: [userId], references: [id])
+  action Action @relation(fields: [actionId], references: [id])
+  step ActionStep @relation(fields: [stepId], references: [id])
+  @@index([userId, actionId, localDate])
 }
 model ActionAssignment {
   id String @id @default(cuid())
