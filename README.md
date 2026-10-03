@@ -8,16 +8,20 @@ Next.js 16、TypeScript、Prisma、PostgreSQL、Caddy、Docker Compose。积分�
 
 ## 本地开发
 
-需要 Node.js 22+、PostgreSQL 17+。复制 `.env.example` 为 `.env`，设置 `DATABASE_URL` 为本地 PostgreSQL 地址，设置 `INITIAL_ADMIN_PASSWORD` 为至少 12 位的随机密码，并将 `APP_ORIGIN` 设为 `http://localhost:3000`。开发演示成员可选设置 `DEV_MEMBER_PASSWORD`（至少 12 位）。
+### 用 VS Code 启动（推荐先体验）
+
+需要 Node.js 22+、VS Code，以及 PostgreSQL 17 或 Docker Desktop。macOS 可先运行 `brew install postgresql@17`；Windows 可安装 Docker Desktop。安装完成后，在 VS Code 中打开**仓库根目录 `Bonus`**，打开「运行和调试」，选择「ActionPoints：本地启动」，按 F5。
+
+首次启动会自动：生成仅供本机使用的 `.env`、安装 npm 依赖、启动 127.0.0.1:54329 的开发数据库、执行迁移和示例初始化，然后启动网页。浏览器打开 `http://localhost:3000`。默认本地演示账号：管理员 `admin` / `local-demo-password-change-me`，成员 `member` / `local-member-password-change-me`。这些演示密码只用于本机，不要复制到服务器。`.env` 和本地数据目录 `.local/` 不会提交到 Git。
+
+如果不使用 VS Code，等价的终端命令是：
 
 ```bash
-npm install
-npx prisma migrate deploy
-npm run db:seed
+npm run dev:setup
 npm run dev
 ```
 
-访问 `http://localhost:3000`。首次初始化只创建一个管理员；管理员随后在「管理 → 成员」添加家庭成员，并在「行动」中分配行动。开发环境设置 `DEV_MEMBER_PASSWORD` 时会创建示例 `member` 账号；生产环境不会创建默认成员或公开密码。
+首次启动后，管理员可在「管理 → 成员」添加家庭成员，并在「行动」中分配行动。生产环境不会创建默认成员或公开密码。若要改本地密码，在首次启动前编辑 `.env`；创建账号后需要在管理界面修改密码，单纯更改环境变量不会覆盖现有账号。
 
 ## 测试
 

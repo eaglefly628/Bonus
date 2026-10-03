@@ -1,3 +1,3 @@
 import type { NextConfig } from 'next';
-const config: NextConfig = { output: 'standalone', turbopack: { root: process.cwd() } };
+const config: NextConfig = { output: 'standalone', turbopack: { root: process.cwd() }, agentRules: false };
 export default config;

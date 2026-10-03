@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "ActionPoints：本地启动",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run dev",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "准备 ActionPoints 本地环境"
+    }
+  ]
+}
