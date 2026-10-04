@@ -54,6 +54,12 @@ async function handler(req: NextRequest, ctx: Context) {
       return NextResponse.json({ settlements, completions, transactions });
     }
     if (user.role !== 'ADMIN') return fail('无权限',403);
+    if (key === 'admin/preview' && method === 'GET') {
+      const memberId=str(req.nextUrl.searchParams.get('userId'));
+      const member=await db.user.findFirst({where:{id:memberId,role:'MEMBER',active:true},select:{id:true,username:true}});
+      if(!member)throw new Error('请选择有效的家庭成员');
+      return NextResponse.json({member,today:await todayData(member.id)});
+    }
     if (key === 'admin/overview' && method === 'GET') {
       const users = await db.user.findMany({ where: { active:true }, select: { id:true, username:true, role:true } });
       const today = localDate();

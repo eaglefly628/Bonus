@@ -11,6 +11,8 @@ test('成员无法访问管理员数据，且积分接口只返回本人流水',
   assert.ok(cookie);
   const admin=await fetch(base+'/api/admin/users',{headers:{Cookie:cookie}});
   assert.equal(admin.status,403);
+  const preview=await fetch(base+'/api/admin/preview?userId=any',{headers:{Cookie:cookie}});
+  assert.equal(preview.status,403);
   const points=await fetch(base+'/api/points',{headers:{Cookie:cookie}});
   assert.equal(points.status,200);
   const me=await fetch(base+'/api/auth/me',{headers:{Cookie:cookie}});

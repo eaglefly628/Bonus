@@ -8,6 +8,10 @@ Next.js 16、TypeScript、Prisma、PostgreSQL、Caddy、Docker Compose。积分�
 
 ## 本地开发
 
+### 前台与管理后台
+
+同一个网址 `http://localhost:3000` 根据登录账号进入不同界面：家庭成员进入「今天」前台，按步骤完成行动，并可查看积分、奖励和记录；管理员进入「管理后台」，设置 Pattern、成员和奖励。管理员可点击「查看成员前台」，选择一位成员查看其今天的界面；预览是只读的，不会代替成员领取积分。
+
 ### 用 VS Code 启动（推荐先体验）
 
 需要 Node.js 22+、VS Code，以及 PostgreSQL 17 或 Docker Desktop。macOS 可先运行 `brew install postgresql@17`；Windows 可安装 Docker Desktop。安装完成后，在 VS Code 中打开**仓库根目录 `Bonus`**，打开「运行和调试」，选择「ActionPoints：本地启动」，按 F5。
