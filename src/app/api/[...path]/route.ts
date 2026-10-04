@@ -24,6 +24,17 @@ async function handler(req: NextRequest, ctx: Context) {
   const method = req.method;
   if (method !== 'GET' && !originOK(req)) return fail('请求来源不受信任', 403);
   try {
+    if (key === 'auth/demo') {
+      const localDemo=process.env.NODE_ENV!=='production' && process.env.APP_ORIGIN==='http://localhost:3000' && ['localhost','127.0.0.1'].includes(req.nextUrl.hostname);
+      if (!localDemo) return fail('本地体验入口不可用', 404);
+      if (method==='GET') return NextResponse.json({enabled:true});
+      if (method==='POST') {
+        const role=str((await body(req)).role);
+        if (role==='MEMBER' && process.env.DEV_MEMBER_PASSWORD) return NextResponse.json(await login('member',process.env.DEV_MEMBER_PASSWORD));
+        if (role==='ADMIN' && process.env.INITIAL_ADMIN_PASSWORD) return NextResponse.json(await login(process.env.INITIAL_ADMIN_USERNAME||'admin',process.env.INITIAL_ADMIN_PASSWORD));
+        return fail('本地体验账号未配置');
+      }
+    }
     if (key === 'auth/login' && method === 'POST') {
       const b = await body(req);
       return NextResponse.json(await login(str(b.username,80), str(b.password,200)));
@@ -40,7 +51,14 @@ async function handler(req: NextRequest, ctx: Context) {
       const transactions = await db.pointTransaction.findMany({ where: { userId: user.id }, orderBy: { createdAt:'desc' } });
       return NextResponse.json({ today:localDate(), balance: await getBalance(user.id), transactions });
     }
-    if (key === 'rewards' && method === 'GET') return NextResponse.json(await db.reward.findMany({ where: { enabled:true }, orderBy: { sortOrder:'asc' } }));
+    if (key === 'rewards' && method === 'GET') {
+      const [items,owned,balance]=await Promise.all([
+        db.reward.findMany({ where: { enabled:true }, orderBy: { sortOrder:'asc' } }),
+        db.rewardRedemption.findMany({where:{userId:user.id,status:{not:'CANCELLED'}},select:{rewardId:true}}),
+        getBalance(user.id)
+      ]);
+      return NextResponse.json({items,balance,ownedRewardIds:owned.map(item=>item.rewardId)});
+    }
     if (key === 'rewards/redeem' && method === 'POST') return NextResponse.json(await redeem(user.id, str((await body(req)).rewardId)));
     if (key === 'rewards/mine' && method === 'GET') return NextResponse.json(await db.rewardRedemption.findMany({ where: { userId:user.id }, orderBy: { redeemedAt:'desc' } }));
     if (key === 'rewards/use' && method === 'POST') return NextResponse.json(await useReward(user.id, str((await body(req)).redemptionId)));
@@ -51,14 +69,20 @@ async function handler(req: NextRequest, ctx: Context) {
         db.actionCompletion.findMany({ where: { userId:user.id, startupLatencySeconds: { not:null } }, orderBy: { completedAt:'desc' }, take: 100, select: { localDate:true, startupLatencySeconds:true, actionNameSnapshot:true } }),
         db.pointTransaction.findMany({ where: { userId:user.id }, orderBy: { createdAt:'desc' } })
       ]);
-      return NextResponse.json({ settlements, completions, transactions });
+      return NextResponse.json({ today:localDate(), balance:await getBalance(user.id), settlements, completions, transactions });
     }
     if (user.role !== 'ADMIN') return fail('无权限',403);
     if (key === 'admin/preview' && method === 'GET') {
       const memberId=str(req.nextUrl.searchParams.get('userId'));
       const member=await db.user.findFirst({where:{id:memberId,role:'MEMBER',active:true},select:{id:true,username:true}});
       if(!member)throw new Error('请选择有效的家庭成员');
-      return NextResponse.json({member,today:await todayData(member.id)});
+      const [today,items,owned,balance]=await Promise.all([
+        todayData(member.id),
+        db.reward.findMany({where:{enabled:true},orderBy:{sortOrder:'asc'}}),
+        db.rewardRedemption.findMany({where:{userId:member.id,status:{not:'CANCELLED'}},select:{rewardId:true}}),
+        getBalance(member.id)
+      ]);
+      return NextResponse.json({member,today,rewards:{items,balance,ownedRewardIds:owned.map(item=>item.rewardId)}});
     }
     if (key === 'admin/overview' && method === 'GET') {
       const users = await db.user.findMany({ where: { active:true }, select: { id:true, username:true, role:true } });
