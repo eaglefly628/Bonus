@@ -40,7 +40,7 @@ DATABASE_URL='postgresql://.../actionpoints_test?schema=public' npm test
 
 ## 阿里云 ECS 部署
 
-准备 Ubuntu LTS 云服务器，安装 Docker Engine 与 Docker Compose 插件。为域名设置指向服务器公网 IP 的 A 记录，安全组仅开放 80、443 和用于管理的 SSH；数据库端口不映射到公网。把仓库复制到服务器，复制 `.env.example` 为 `.env` 并修改所有密码、密钥、域名和 `APP_ORIGIN`。`APP_ORIGIN` 必须与浏览器访问的 HTTPS 地址完全一致，例如 `https://points.example.com`。数据库密码中若含 `@`、`:`、`/` 等字符，需在 `DATABASE_URL` 中 URL 编码；Compose 配置当前会把该密码直接插入 URL，建议生成只含字母数字的长密码。
+准备 Ubuntu LTS 云服务器，安装 Docker Engine 与 Docker Compose 插件。为域名设置指向服务器公网 IP 的 A 记录，安全组仅开放 80、443 和用于管理的 SSH；数据库端口不映射到公网。把仓库复制到服务器后，在服务器的仓库目录执行 `scripts/create-production-env.sh points.example.com`，脚本会生成仅当前用户可读的 `.env`、随机数据库密码、管理员初始密码和定时任务密钥。它不会覆盖已有的 `.env`。不要把本地开发用的 `.env` 复制到服务器。`APP_ORIGIN` 必须与浏览器访问的 HTTPS 地址完全一致。管理员初始密码保存在服务器的 `.env` 中，请通过安全的服务器会话查看和妥善保存。
 
 ```bash
 docker compose up -d --build
